@@ -1,10 +1,7 @@
 name: Deploy Supabase Edge Function (elaborate-bio)
 
 on:
-  # Manuel çalıştırma butonu için:
   workflow_dispatch:
-
-  # Kod değişince otomatik çalışsın:
   push:
     paths:
       - "supabase/functions/elaborate-bio/**"
@@ -19,11 +16,14 @@ jobs:
 
       - name: Setup Supabase CLI
         uses: supabase/setup-cli@v1
+        with:
+          version: latest
 
       - name: Supabase login
         run: supabase login --token "${{ secrets.SUPABASE_ACCESS_TOKEN }}"
 
-      # Link project ADIMI YOK
+      - name: Whoami (debug)
+        run: supabase projects list --debug || true
 
       - name: Deploy function
         run: supabase functions deploy elaborate-bio --project-ref "${{ secrets.SUPABASE_PROJECT_REF }}"
