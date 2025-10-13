@@ -19,8 +19,7 @@ jobs:
       - name: Supabase login
         run: supabase login --token "${{ secrets.SUPABASE_ACCESS_TOKEN }}"
 
-      - name: Link project
-        run: supabase link --project-ref "${{ secrets.SUPABASE_PROJECT_REF }}"
+      # Link adımını kaldırdık
 
       - name: Deploy function
-        run: supabase functions deploy elaborate-bio
+        run: supabase functions deploy elaborate-bio --project-ref "${{ secrets.SUPABASE_PROJECT_REF }}"
