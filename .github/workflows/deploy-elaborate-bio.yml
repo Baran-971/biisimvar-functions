@@ -1,0 +1,26 @@
+name: Deploy Supabase Edge Function (elaborate-bio)
+
+on:
+  push:
+    paths:
+      - "supabase/functions/elaborate-bio/**"
+    branches: [ main ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Supabase CLI
+        uses: supabase/setup-cli@v1
+
+      - name: Supabase login
+        run: supabase login --token "${{ secrets.SUPABASE_ACCESS_TOKEN }}"
+
+      - name: Link project
+        run: supabase link --project-ref "${{ secrets.SUPABASE_PROJECT_REF }}"
+
+      - name: Deploy function
+        run: supabase functions deploy elaborate-bio
