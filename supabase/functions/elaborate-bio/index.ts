@@ -1,115 +1,163 @@
 // supabase/functions/elaborate-bio/index.ts
-// Minimal OpenAI-compatible endpoint (Groq destekli) + "yoğun saat" koruması + deterministik ayarlar
 
-const CORS = {
+// ---------- CORS ----------
+const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
-// Groq için base; OpenAI kullanacaksan OPENAI_BASE_URL'i boş bırakabilirsin
-const BASE  = Deno.env.get("OPENAI_BASE_URL") ?? "https://api.groq.com/openai/v1";
-const KEY   = Deno.env.get("OPENAI_API_KEY") ?? "";                // Groq: gsk_...
-const MODEL = Deno.env.get("LLM_MODEL") ?? "llama-3.1-8b-instant"; // instant varsayılan
+// ---------- ENV ----------
+const API_BASE = Deno.env.get("OPENAI_BASE_URL") ?? "https://api.openai.com/v1";
+const API_KEY = Deno.env.get("OPENAI_API_KEY") ?? "";
+const MODEL = Deno.env.get("LLM_MODEL") ?? "llama-3.1-8b-instant";
 
-const bad = (detail: string, code = 400) =>
-  new Response(JSON.stringify({ error: detail }), {
+function badRequest(detail: unknown, code = 400) {
+  return new Response(JSON.stringify({ error: "bad_request", detail }), {
     status: code,
-    headers: { "Content-Type": "application/json", ...CORS },
+    headers: { "Content-Type": "application/json", ...corsHeaders },
   });
-
-const ok = (data: unknown) =>
-  new Response(JSON.stringify(data), {
+}
+function ok(body: unknown) {
+  return new Response(JSON.stringify(body), {
     status: 200,
-    headers: { "Content-Type": "application/json", ...CORS },
+    headers: { "Content-Type": "application/json", ...corsHeaders },
   });
+}
 
-Deno.serve(async (req) => {
-  if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
-  if (req.method !== "POST")    return bad("Only POST is allowed", 405);
-  if (!KEY)                     return bad("OPENAI_API_KEY is missing (Edge Function Secrets)", 500);
+// ---------- Yasaklı kelimeler ----------
+// Not: Listeyi ihtiyacına göre genişlet.
+// Basit ama etkili bir normalizasyon + bütün kelime eşleştirme yapılır.
+const BANNED_WORDS = [
+  // genel küfürler (TR karakterli varyantlar otomatik normalize edilecek)
+  "amk", "amına", "amını", "amina", "orospu", "piç", "sıç", "sik", "sikerim", "sikeyim",
+  "s.ktir", "s.kerim", "salak", "aptal", "gerizekalı", "gerizekali", "mal", "oç",
+  // ırkçı/aşağılayıcı bazı yaygın örnekler
+  "yarrak", "ibne", "top", "şerefsiz", "serefsiz", "kahpe",
+];
 
-  // Body al
-  let rawBio = "";
-  try {
-    const body = await req.json();
-    rawBio = (body?.rawBio ?? "").toString().trim();
-  } catch { /* ignore */ }
-  if (!rawBio) return bad("`rawBio` is required in JSON body");
+// TR karakterlerini sadeleştirip küçük harfe çevir
+function normalize(text: string): string {
+  return text
+    .toLocaleLowerCase("tr")
+    .replaceAll(/ç/g, "c")
+    .replaceAll(/ğ/g, "g")
+    .replaceAll(/ı/g, "i")
+    .replaceAll(/i̇/g, "i")
+    .replaceAll(/ö/g, "o")
+    .replaceAll(/ş/g, "s")
+    .replaceAll(/ü/g, "u");
+}
 
-  // Girdide "yoğun/kalabalık/pik/rush" var mı? Varsa çıktıda şart koşacağız
-  const rush = /(?:yoğun|kalabalık|pik|rush)/i.test(rawBio);
+// kelime sınırlarıyla eşleştir (Unicode)
+const bannedRegex = new RegExp(
+  `\\b(${BANNED_WORDS.map(w => normalize(w).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\b`,
+  "iu"
+);
 
-  // Sistem yönergesi (sade ve gerçekçi)
-  const systemPrompt: string[] = [
+function findBannedWords(input: string): string[] {
+  const n = normalize(input);
+  const found = new Set<string>();
+  let m: RegExpExecArray | null;
+  const r = new RegExp(bannedRegex.source, bannedRegex.flags); // fresh regex for exec loop
+  while ((m = r.exec(n)) !== null) {
+    found.add(m[1]);
+  }
+  return Array.from(found);
+}
+
+// ---------- LLM çağrısı ----------
+async function callLLM(rawBio: string): Promise<string> {
+  if (!API_KEY) throw new Error("OPENAI_API_KEY missing");
+
+  const system = [
     "Türkçe yazan bir editörsün.",
-    "Görev: Ham biyoyu YALIN ve GERÇEKÇİ bir üslupla en fazla 3 cümleye dönüştür.",
-    "Tarz: Basit ve anlaşılır Türkçe kullan; karmaşık/edebi ifadelerden kaçın.",
+    "Girdi hangi dilde olursa olsun, çıktı dili daima Türkçe olacak.",
+    "Yazan kişinin eğitimi çok iyi olmayabilir; sade ve anlaşılır yaz.",
+    "Görev: Ham biyoyu YALIN ve GERÇEKÇİ en fazla 4 cümleye dönüştür.",
     "KURALLAR:",
     "- SADECE verilen bilgilere dayan; yeni unvan/eğitim/başarı uydurma.",
     "- Abartı ve öznel övgü YOK (örn: severim, seviyorum, tutkuluyum, mükemmel, lider, uzman).",
     "- Başlık/emoji/kod bloğu/tırnak YOK.",
-    "- Yazım hatalarını düzelt; terimleri doğru yaz (örn. 'restoranda', 'ocakbaşı').",
+    "- Yazım hatalarını düzelt.",
     "- 1. cümle: süre + rol + yer (örn. 'X yıl restoranda garsonluk yaptım').",
-    "- 2. cümle: verilen beceri/alışkanlıkları NÖTR ifade et (örn. 'Yoğun saatlerde çalışmaya alışığım; müşterilerle iyi iletişim kurarım.').",
-    "- ÇIKTI: yalnızca düz metin; 2–3 kısa cümle; toplam yaklaşık 25–40 kelime.",
-  ];
-  if (rush) {
-    systemPrompt.push(
-      "- Girişte 'yoğun/kalabalık/pik/rush' geçtiği için, çıktıda bu bilgi NET olarak yer almalı (örn. 'Yoğun saatlerde çalışmaya alışığım.')."
-    );
+    "- 2. cümle: verilen beceri/alışkanlıkları NÖTR ifade et (örn. 'Yoğun saatlerde çalışmaya alışığım; müşterilerle düzgün iletişim kurarım.').",
+    "- ÇIKTI: yalnızca düz metin; en fazla 4 cümle; mümkünse 2–3 kısa cümle.",
+  ].join("\n");
+
+  const user = `Ham biyo: "${rawBio}"\n\nLütfen sadece düz metni döndür.`;
+
+  const res = await fetch(`${API_BASE}/chat/completions`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: MODEL,
+      temperature: 0.0,
+      max_tokens: 160,
+      messages: [
+        { role: "system", content: system },
+        { role: "user", content: user },
+      ],
+    }),
+  });
+
+  if (!res.ok) {
+    const t = await res.text().catch(() => "");
+    throw new Error(`Upstream ${res.status}: ${t}`);
   }
+  const data = await res.json();
+  let text: string =
+    data?.choices?.[0]?.message?.content ??
+    data?.choices?.[0]?.text ??
+    "";
 
-  // Few-shot örnek (yoğun saat bilgisini koruma eğitimi)
-  const fewShot = [
-    {
-      role: "user",
-      content:
-        "Ham biyo:\n3 yıl restoranda garson oldum. yoğun saatlerde çalıştım; müşterilerle iyi anlaştım",
-    },
-    {
-      role: "assistant",
-      content:
-        "3 yıl restoranda garsonluk yaptım. Yoğun saatlerde çalışmaya alışığım; müşterilerle iyi iletişim kurarım.",
-    },
-  ];
+  text = text.trim();
+  // Çoğu model bazen tırnaklarla döner; temizle:
+  if ((text.startsWith('"') && text.endsWith('"')) || (text.startsWith("“") && text.endsWith("”"))) {
+    text = text.slice(1, -1).trim();
+  }
+  if (!text) throw new Error("Empty LLM response");
+  return text;
+}
 
-  // İstek payload'ı (deterministik ve kısa)
-  const bodyPayload = {
-    model: MODEL,
-    temperature: 0.0,                 // mümkün olan en deterministik
-    max_tokens: 90,                    // kısa ve net
-    stop: ["\n\n", "```", "Biyografi"], // gereksiz blok/başlık kes
-    messages: [
-      { role: "system", content: systemPrompt.join("\n") },
-      ...fewShot,
-      {
-        role: "user",
-        content:
-          `Ham biyo:\n${rawBio}\n\nYukarıdaki kurallara TAM uy ve yalnızca düz metin döndür.`,
-      },
-    ],
-  };
+// ---------- Handler ----------
+Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
+  if (req.method !== "POST") return badRequest("Only POST is allowed", 405);
 
-  // LLM çağrısı
   try {
-    const r = await fetch(`${BASE}/chat/completions`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${KEY}`, "Content-Type": "application/json" },
-      body: JSON.stringify(bodyPayload),
+    const body = await req.json().catch(() => ({}));
+    const rawBio = (body?.rawBio ?? "").toString().trim();
+    if (!rawBio) return badRequest("`rawBio` is required in JSON body");
+
+    // Yasaklı içerik kontrolü
+    const banned = findBannedWords(rawBio);
+    if (banned.length > 0) {
+      return new Response(
+        JSON.stringify({
+          error: "prohibited_content",
+          message: "Metinde yasaklı/küfür içeren kelimeler tespit edildi.",
+          words: banned,
+        }),
+        { status: 400, headers: { "Content-Type": "application/json", ...corsHeaders } }
+      );
+    }
+
+    const improvedBio = await callLLM(rawBio);
+    return ok({ improvedBio });
+  } catch (err: unknown) {
+    console.error("elaborate-bio error:", err);
+    const detail =
+      typeof err === "object" && err !== null && "message" in err
+        ? // @ts-ignore
+          err.message
+        : String(err);
+    return new Response(JSON.stringify({ error: "internal_error", detail }), {
+      status: 500,
+      headers: { "Content-Type": "application/json", ...corsHeaders },
     });
-
-    if (!r.ok) return bad(`Upstream error ${r.status}: ${await r.text()}`, 500);
-
-    const data = await r.json();
-    let text = data?.choices?.[0]?.message?.content ?? data?.choices?.[0]?.text ?? "";
-    if (!text) return bad("Empty response from LLM", 500);
-
-    // Uçtaki tırnak/boşluk/akıllı tırnakları temizle
-    text = text.trim().replace(/^[\s"'“”„«»]+|[\s"'“”„«»]+$/g, "");
-
-    return ok({ improvedBio: text });
-  } catch (e) {
-    return bad(`Runtime error: ${e instanceof Error ? e.message : String(e)}`, 500);
   }
 });
