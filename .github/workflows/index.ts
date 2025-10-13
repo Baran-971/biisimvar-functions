@@ -1,13 +1,9 @@
-// supabase/functions/elaborate-bio/index.ts
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
-// ENV (Edge Functions > Secrets)
-// OpenAI:  LLM_PROVIDER=openai, LLM_MODEL=gpt-5-mini, OPENAI_API_KEY=sk-...
-// Gemini:  LLM_PROVIDER=gemini, LLM_MODEL=gemini-2.0-flash, GEMINI_API_KEY=AIza...
 const PROVIDER = Deno.env.get("LLM_PROVIDER")?.toLowerCase();
 const MODEL = Deno.env.get("LLM_MODEL") ?? "";
 const OPENAI_KEY = Deno.env.get("OPENAI_API_KEY");
@@ -15,14 +11,12 @@ const GEMINI_KEY = Deno.env.get("GEMINI_API_KEY");
 
 function badRequest(detail: string, code = 400) {
   return new Response(JSON.stringify({ error: "bad_request", detail }), {
-    status: code,
-    headers: { "Content-Type": "application/json", ...corsHeaders },
+    status: code, headers: { "Content-Type": "application/json", ...corsHeaders },
   });
 }
 function ok(body: unknown) {
   return new Response(JSON.stringify(body), {
-    status: 200,
-    headers: { "Content-Type": "application/json", ...corsHeaders },
+    status: 200, headers: { "Content-Type": "application/json", ...corsHeaders },
   });
 }
 
@@ -32,24 +26,12 @@ async function callOpenAI(rawBio: string): Promise<string> {
 
   const res = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${OPENAI_KEY}`,
-      "Content-Type": "application/json",
-    },
+    headers: { Authorization: `Bearer ${OPENAI_KEY}`, "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: MODEL,
-      temperature: 0.7,
-      max_tokens: 180,
+      model: MODEL, temperature: 0.7, max_tokens: 180,
       messages: [
-        {
-          role: "system",
-          content:
-            "Sen, hizmet sektörü iş arayanları için profesyonel biyografiler yazan deneyimli bir editörsün. Kullanıcının ham metnini pozitif, akıcı ve hizmet odaklı 4-5 cümlelik profesyonel bir biyografiye dönüştür.",
-        },
-        {
-          role: "user",
-          content: `Ham biyo: "${rawBio}"\n\nLütfen yalnızca son metni döndür.`,
-        },
+        { role: "system", content: "Hizmet sektöründe iş arayanlar için profesyonel biyo yazan editörsün. Ham metni 4-5 cümlelik, pozitif ve hizmet odaklı bir biyoya dönüştür." },
+        { role: "user", content: `Ham biyo: "${rawBio}"\n\nLütfen sadece son metni döndür.` },
       ],
     }),
   });
@@ -69,15 +51,13 @@ async function callGemini(rawBio: string): Promise<string> {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      contents: [
-        {
-          role: "user",
-          parts: [
-            { text: "Sen, hizmet sektörü iş arayanları için profesyonel biyografiler yazan deneyimli bir editörsün." },
-            { text: `Ham biyo: "${rawBio}"\n\nLütfen yalnızca son metni döndür.` },
-          ],
-        },
-      ],
+      contents: [{
+        role: "user",
+        parts: [
+          { text: "Hizmet sektöründe iş arayanlar için profesyonel biyo yazan editörsün." },
+          { text: `Ham biyo: "${rawBio}"\n\nLütfen sadece son metni döndür.` },
+        ],
+      }],
       generationConfig: { temperature: 0.7, maxOutputTokens: 180 },
     }),
   });
@@ -98,20 +78,29 @@ Deno.serve(async (req) => {
     if (!rawBio) return badRequest("`rawBio` is required in JSON body");
     if (!PROVIDER) return badRequest("LLM_PROVIDER is missing (openai|gemini)");
 
-    let improved = "";
-    if (PROVIDER === "openai") improved = await callOpenAI(rawBio);
-    else if (PROVIDER === "gemini") improved = await callGemini(rawBio);
-    else return badRequest("Unsupported LLM_PROVIDER (use openai or gemini)");
+    const improved = PROVIDER === "openai"
+      ? await callOpenAI(rawBio)
+      : PROVIDER === "gemini"
+      ? await callGemini(rawBio)
+      : (() => { throw new Error("Unsupported LLM_PROVIDER"); })();
 
     return ok({ improvedBio: improved });
   } catch (err: unknown) {
     console.error("elaborate-bio error:", err);
+    // Güçlü hata çıktısı
     let detail = "unknown";
-    // @ts-ignore
-    detail = err?.message ?? String(err);
+    try {
+      // @ts-ignore
+      if (err?.response) {
+        // @ts-ignore
+        detail = await err.response.text?.() ?? JSON.stringify(await err.response.json?.());
+      } else {
+        // @ts-ignore
+        detail = err?.message ?? String(err);
+      }
+    } catch { /* ignore */ }
     return new Response(JSON.stringify({ error: "Biyo geliştirilemedi", detail }), {
-      status: 500,
-      headers: { "Content-Type": "application/json", ...corsHeaders },
+      status: 500, headers: { "Content-Type": "application/json", ...corsHeaders },
     });
   }
 });
