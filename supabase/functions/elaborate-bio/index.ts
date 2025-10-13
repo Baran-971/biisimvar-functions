@@ -1,5 +1,5 @@
 // supabase/functions/elaborate-bio/index.ts
-// Profanity-temizlemeli + dinamik cümle hedefli + OpenAI-compatible (Groq) Edge Function
+// Dinamik Hedefli, Profanity-Temizlemeli ve Post-Processing Güvenceli SÜPER ROBUST LLM Fonksiyonu
 
 // ---------- CORS ----------
 const corsHeaders = {
@@ -9,8 +9,8 @@ const corsHeaders = {
 };
 
 // ---------- ENV ----------
-const API_BASE = Deno.env.get("OPENAI_BASE_URL") ?? "https://api.openai.com/v1"; 
-const API_KEY  = Deno.env.get("OPENAI_API_KEY") ?? ""; 
+const API_BASE = Deno.env.get("OPENAI_BASE_URL") ?? "https://api.openai.com/v1";
+const API_KEY  = Deno.env.get("OPENAI_API_KEY") ?? "";
 const MODEL    = Deno.env.get("LLM_MODEL") ?? "llama-3.1-8b-instant";
 
 const bad = (detail: unknown, code = 400) =>
@@ -22,14 +22,12 @@ const ok = (body: unknown) =>
     status: 200, headers: { "Content-Type": "application/json", ...corsHeaders },
   });
 
-// ---------- Küfür listesi (genişletilebilir) ----------
+// ---------- Profanity ve Temizlik Fonksiyonları ----------
 const BANNED_WORDS = [
   "amk","amina","amına","amını","orospu","piç","sic","sıç","sik","sikerim","sikeyim",
   "s.ktir","s.kerim","salak","aptal","gerizekali","gerizekalı","mal","oç",
   "yarrak","ibne","top","serefsiz","şerefsiz","kahpe",
 ];
-
-// TR normalizasyonu
 function normalizeText(tr: string): string {
   return tr
     .toLocaleLowerCase("tr")
@@ -37,11 +35,8 @@ function normalizeText(tr: string): string {
     .replaceAll(/i̇/g,"i").replaceAll(/ö/g,"o").replaceAll(/ş/g,"s").replaceAll(/ü/g,"u");
 }
 const bannedSet = new Set(BANNED_WORDS.map(w => normalizeText(w)));
-
-// Küfürleri *** ile maskeler (noktalama ve boşluklar korunur)
 function sanitizeProfanity(text: string): { cleaned: string; replaced: string[] } {
   const replaced = new Set<string>();
-  // Unicode Karakter Sınıfı \p{L} ile tüm dillerdeki harfleri yakalama
   const cleaned = text.replace(/\p{L}+/gu, (word) => { 
     const norm = normalizeText(word);
     if (bannedSet.has(norm)) {
@@ -53,8 +48,13 @@ function sanitizeProfanity(text: string): { cleaned: string; replaced: string[] 
   return { cleaned, replaced: Array.from(replaced) };
 }
 
-// ---------- Yardımcılar: cümle sayımı ve hedef aralık ----------
+// ---------- Dinamik Prompt Yardımcıları ----------
+function splitSentences(t: string): string[] {
+  // Nokta, ünlem, soru işaretlerinden sonraki boşlukla böl
+  return t.split(/(?<=[\.\!\?])\s+|\n+/).map(s => s.trim()).filter(Boolean);
+}
 function countSentences(t: string): number {
+  // Cümle sayımında noktalı virgül de sayılır
   const parts = t.split(/[\.\!\?\;\n]+/).map(s => s.trim()).filter(Boolean);
   return parts.length || 1;
 }
@@ -65,26 +65,58 @@ function pickTargetRange(n: number): { min: number; max: number } {
   return { min: 5, max: 8 };
 }
 
-// ---------- LLM çağrısı ----------
-async function callLLM(cleanedInput: string): Promise<string> {
-  if (!API_KEY) throw new Error("OPENAI_API_KEY missing");
+// ---------- YEREL POST-PROCESSING YARDIMCILARI (Yeni Eklenen) ----------
+function neutralizeSubjectivity(text: string): string {
+  const patterns: Array<[RegExp, string]> = [
+    [/\bçok\s+iyi biliyorum\b/gi, "iyi bilirim"],
+    [/\bçok\s+iyi\b/gi, "iyi"],
+    [/\bçok\b/gi, ""],
+    [/\başırı\b/gi, ""],
+    [/\bher zaman\b/gi, ""],
+    [/\bhiç sorun teşkil etmiyor\b/gi, "uyum sağlayabilirim"],
+    [/\bbenim için önemlidir\b/gi, "önemserim"],
+    [/\bpozitif ayrılırım\b/gi, ""],
+    [/\bsüper(dir)?\b/gi, ""],
+    [/\bmükemmel\b/gi, ""],
+    [/\blider(im)?\b/gi, ""],
+    [/\buzman(ıyım)?\b/gi, ""],
+  ];
+  let out = text;
+  for (const [re, rep] of patterns) out = out.replace(re, rep).replace(/\s{2,}/g, " ").trim();
+  return out.replace(/\s([;,.!?:])+/g, "$1");
+}
 
-  const inputSentenceCount = countSentences(cleanedInput);
-  const target = pickTargetRange(inputSentenceCount);
-  const rush = /(?:yoğun|kalabalık|pik|rush)/i.test(cleanedInput);
+function ensureRushMention(text: string): string {
+  const hasRush = /(yoğun|kalabalık)\s+saat/iu.test(text) || /\brush\b/i.test(text);
+  if (hasRush) return text;
+  const sentences = splitSentences(text);
+  // Giriş rush içeriyorsa ve model atladıysa ekle
+  sentences.push("Yoğun saatlerde çalışmaya alışığım.");
+  return sentences.join(" ");
+}
+
+function enforceSentenceCap(text: string, maxSentences: number): string {
+  const parts = splitSentences(text);
+  if (parts.length <= maxSentences) return text;
+  return parts.slice(0, maxSentences).join(" ");
+}
+
+// ---------- LLM çağrısı ----------
+async function callLLM(cleanedInput: string, targetMax: number, inputCount: number, rush: boolean): Promise<string> {
+  if (!API_KEY) throw new Error("OPENAI_API_KEY missing");
 
   const systemLines: string[] = [
     "Türkçe yazan bir editörsün.",
     "Girdi hangi dilde olursa olsun, çıktı dili daima Türkçe olacak.",
     "Görev: Ham biyoyu YALIN ve GERÇEKÇİ bir üslupla toparla; bilgileri koru.",
-    `Girdi yaklaşık ${inputSentenceCount} cümle; çıktıda ${target.min}-${target.max} cümleyi hedefle.`,
-    "KURALLAR:",
+    `Girdi yaklaşık ${inputCount} cümle; çıktıda ${targetMax} cümleyi aşma.`, // Daha net komut
+    "KESİN UYULMASI GEREKEN KURALLAR:",
     "- SADECE verilen bilgilere dayan; yeni unvan/eğitim/başarı uydurma.",
-    "- Abartı ve öznel övgü yok (örn: severim, seviyorum, tutkuluyum, mükemmel, lider, uzman).",
+    "- Abartı ve öznel övgü yok (örn: süperim, pozitif ayrılırım, çok iyi biliyorum, mükemmel, lider, uzman).",
     "- Başlık/emoji/kod bloğu/tırnak yok.",
     "- Yazım hatalarını düzelt; terimleri doğru yaz (örn. 'restoranda', 'ocakbaşı').",
     "- Bilgi kaybı olmasın; sadece tekrarları ve dolgu sözcükleri temizle.",
-    "- Cümleleri kısa tut; akıcı bir paragraf halinde döndür.",
+    "- Cümleleri kısa tut; tek paragraf halinde döndür.",
   ];
   if (rush) {
     systemLines.push(
@@ -93,7 +125,7 @@ async function callLLM(cleanedInput: string): Promise<string> {
   }
   const system = systemLines.join("\n");
 
-  const maxTokens = Math.min(90 + inputSentenceCount * 10, 220);
+  const maxTokens = Math.min(90 + inputCount * 10, 220);
 
   const res = await fetch(`${API_BASE}/chat/completions`, {
     method: "POST",
@@ -105,7 +137,7 @@ async function callLLM(cleanedInput: string): Promise<string> {
       stop: ["\n\n","```","Biyografi"],
       messages: [
         { role: "system", content: system },
-        { role: "user", content: `Ham biyo:\n${cleanedInput}\n\nLütfen yalnızca düz metin döndür.` },
+        { role: "user", content: `Ham biyo:\n${cleanedInput}\n\nYukarıdaki kurallara TAM ve KESİN uyarak yalnızca düz metin döndür.` },
       ],
     }),
   });
@@ -113,8 +145,6 @@ async function callLLM(cleanedInput: string): Promise<string> {
   if (!res.ok) throw new Error(`Upstream ${res.status}: ${await res.text().catch(()=> "")}`);
   const data = await res.json();
   let text: string = data?.choices?.[0]?.message?.content ?? data?.choices?.[0]?.text ?? "";
-  
-  // GÜNCELLEME: Çıktıdaki tüm dış tırnak ve boşlukları temizle
   text = text.trim().replace(/^[\s"'“”„«»]+|[\s"'“”„«»]+$/g, "");
   
   if (!text) throw new Error("Empty LLM response");
@@ -125,6 +155,7 @@ async function callLLM(cleanedInput: string): Promise<string> {
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST")    return bad("Only POST is allowed", 405);
+  if (!API_KEY) return bad("OPENAI_API_KEY is missing (Edge Function Secrets)", 500);
 
   try {
     const body = await req.json().catch(() => ({}));
@@ -135,19 +166,33 @@ Deno.serve(async (req) => {
     const inSan = sanitizeProfanity(rawBioInput);
     const cleanedInput = inSan.cleaned;
 
-    // 2) LLM (temizlenmiş girişle)
-    const llmText = await callLLM(cleanedInput);
+    // Dinamik parametreleri hesapla (Post-processing için gerekli)
+    const inputHadRush = /(?:yoğun|kalabalık|pik|rush)/i.test(cleanedInput);
+    const inputSentenceCount = countSentences(cleanedInput);
+    const target = pickTargetRange(inputSentenceCount);
 
-    // 3) Çıkış küfür temizliği (garanti)
+    // 2) LLM Çağrısı
+    let llmText = await callLLM(cleanedInput, target.max, inputSentenceCount, inputHadRush);
+
+    // 3) YEREL POST-PROCESSING (Emniyet Kemerleri)
+    
+    // 3.a Öznel/abartı temizliği
+    llmText = neutralizeSubjectivity(llmText);
+
+    // 3.b Rush bilgisi kaybolduysa ekle (girdi rush içeriyorsa)
+    if (inputHadRush) llmText = ensureRushMention(llmText);
+
+    // 3.c Cümle tavanını uygula (max değerini aşan cümleleri kırp)
+    llmText = enforceSentenceCap(llmText, target.max);
+
+    // 3.d Son tur: küfür maskesi (garanti)
     const outSan = sanitizeProfanity(llmText);
     const improvedBio = outSan.cleaned;
 
     return ok({ improvedBio });
   } catch (err: unknown) {
-    // Hata yakalama bloğu daha sağlam hale getirildi
     const detail =
       typeof err === "object" && err !== null && "message" in err
-        // @ts-ignore
         ? (err.message as string)
         : String(err);
     return new Response(JSON.stringify({ error: "internal_error", detail }), {
