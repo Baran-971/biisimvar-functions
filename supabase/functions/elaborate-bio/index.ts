@@ -1,5 +1,5 @@
 // supabase/functions/elaborate-bio/index.ts
-// Geliştirilmiş versiyon: Groq'un yanlış yorumlamasını engelleyen NET KURALLAR
+// FEW-SHOT EXAMPLES + Daha Sıkı Kontrol + Yazım Düzeltme Sözlüğü
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -91,6 +91,33 @@ function enforceSentenceCap(text: string, maxSentences: number): string {
   return parts.slice(0, maxSentences).join(" ");
 }
 
+// ========== YAZIM DÜZELTMELERİ SÖZLÜĞÜ ==========
+const SPELLING_FIXES: Record<string, string> = {
+  "öğrendm": "öğrendim",
+  "biliyom": "bilirim",
+  "yapıyom": "yaparım",
+  "geliyom": "gelirim",
+  "çalışıyom": "çalışırım",
+  "hamacun": "lahmacun",
+  "hamurcun": "lahmacun",
+  "hamurcuğun": "lahmacun",
+  "lahmacun": "lahmacun",
+  "restorant": "restoran",
+  "restarant": "restoran",
+  "resturant": "restoran",
+  "ocakbaşı": "ocakbaşı",
+  "ockbaşı": "ocakbaşı",
+};
+
+function preCorrectSpelling(text: string): string {
+  let corrected = text;
+  for (const [wrong, right] of Object.entries(SPELLING_FIXES)) {
+    const regex = new RegExp(`\\b${wrong}\\b`, 'gi');
+    corrected = corrected.replace(regex, right);
+  }
+  return corrected;
+}
+
 function neutralizeSubjectivity(text: string): string {
   const patterns: Array<[RegExp, string]> = [
     [/\bçok\s+iyi\s+biliyorum\b/gi, "iyi bilirim"],
@@ -134,53 +161,67 @@ function ensureRushMention(text: string): string {
   return sentences.join(" ");
 }
 
-// ========== GELİŞTİRİLMİŞ LLM ÇAĞRISI ==========
+// ========== FEW-SHOT PROMPT İLE LLM ==========
 async function callLLM(cleanedInput: string, targetMax: number, inputCount: number, rush: boolean): Promise<string> {
   if (!API_KEY) throw new Error("OPENAI_API_KEY missing");
 
-  const systemLines: string[] = [
-    "Sen bir metin editörüsün. Görevi SADECE gramer ve yazım hatalarını düzeltmek, gereksiz tekrarları temizlemek.",
-    "ÇOK ÖNEMLİ: Metnin anlamını, konusunu, terimlerini DEĞİŞTİRME.",
-    "",
-    "=== KESİN YASAKLAR ===",
-    "❌ ASLA kelime anlamlarını değiştirme",
-    "❌ ASLA yeni bilgi, unvan, eğitim, beceri ekleme",
-    "❌ ASLA terimleri farklı yorumlama",
-    "❌ ASLA başka bir alana çevirme",
-    "",
-    "=== ÖRNEKLER (YANLIŞ vs DOĞRU) ===",
-    "YANLIŞ: 'tavuk yapmayı öğrendim' → 'tavuk yetiştiriciliği'  ❌",
-    "DOĞRU: 'tavuk yapmayı öğrendim' → 'tavuk pişirmeyi öğrendim' ✓",
-    "",
-    "YANLIŞ: 'kahvaltı hazırlarım' → 'kahvaltı servisi yönetimi'  ❌",
-    "DOĞRU: 'kahvaltı hazırlarım' → 'Kahvaltı hazırlarım' ✓",
-    "",
-    "YANLIŞ: 'tatlı yapıyorum' → 'pastacılık sertifikam var'  ❌",
-    "DOĞRU: 'tatlı yapıyorum' → 'Tatlı yaparım' ✓",
-    "",
-    "=== İZİN VERİLEN DÜZELTMELER ===",
-    "✓ Yazım hataları: 'restorant' → 'restoran'",
-    "✓ Gramer: 'yapıyom' → 'yaparım', 'biliyom' → 'bilirim'",
-    "✓ Büyük harf: cümle başları",
-    "✓ Gereksiz tekrar: 'çok çok iyi' → 'iyi'",
-    "✓ Dolgu sözcükler: 'yani, işte, falan' gibi kelimeler silinebilir",
-    "",
-    "=== KURALLAR ===",
-    `• Çıktı ${targetMax} cümleyi AŞMAYACAK`,
-    "• Tek paragraf, başlık/emoji/tırnak YOK",
-    "• Her cümleyi olduğu gibi koru, sadece düzelt",
-    "• Öznel övgü yok: 'mükemmel, süper, uzman, lider' gibi kelimeler kullanma",
-    "• Kişinin söylediği iş/beceriyi AYNEN kullan",
+  const system = `Sen bir Türkçe metin düzeltme botusun. Görevi SADECE yazım ve gramer hatalarını düzeltmek, cümleleri akıcı hale getirmek.
+
+MUTLAKA UYULMASI GEREKEN KURALLAR:
+1. KELİMELERİN ANLAMINI DEĞİŞTİRME - kişi ne demişse onu koru
+2. YENİ BİLGİ EKLEME - sadece düzelt
+3. TERİMLERİ OLDUĞU GİBİ KULLAN - farklı yorumlama
+4. Maksimum ${targetMax} cümle
+
+İZİN VERİLEN:
+✓ Yazım düzeltme: öğrendm → öğrendim
+✓ Gramer: yapıyom → yaparım
+✓ Cümle birleştirme: kısa parçaları akıcı cümleler yap
+✓ Gereksiz tekrar/dolgu silme
+
+YASAKLAR:
+❌ Anlam değiştirme
+❌ Yeni unvan/beceri ekleme
+❌ Kelime yorumlama (örn: tavuk yapmak ≠ tavuk yetiştiriciliği)`;
+
+  // FEW-SHOT EXAMPLES
+  const fewShotExamples = [
+    {
+      role: "user",
+      content: "tavuk yapmayı öğrendm. bizim köyde. sonra istanbula geldim. burada hamacun yapayı öğrendim 4 sene."
+    },
+    {
+      role: "assistant",
+      content: "Köyde tavuk pişirmeyi öğrendim. İstanbul'a geldikten sonra 4 yıl lahmacun yaptım."
+    },
+    {
+      role: "user",
+      content: "restorantta çalıştım 3 sene. garsonluk yaptm. şimdi aşçı yardımcısıyım."
+    },
+    {
+      role: "assistant",
+      content: "3 yıl restoranda garsonluk yaptım. Şimdi aşçı yardımcısıyım."
+    },
+    {
+      role: "user",
+      content: "kahvaltı hazırlamayı biliyom. yumurta omlet menemen hepsi. yoğun saatlerde de çalıştım."
+    },
+    {
+      role: "assistant",
+      content: "Kahvaltı hazırlarım; yumurta, omlet, menemen yaparım. Yoğun saatlerde çalışmaya alışığım."
+    }
   ];
 
-  if (rush) {
-    systemLines.push(
-      "• Girdide 'yoğun/kalabalık/rush' geçiyorsa çıktıda da olmalı"
-    );
-  }
-
-  const system = systemLines.join("\n");
   const maxTokens = Math.min(90 + inputCount * 10, 200);
+
+  const messages = [
+    { role: "system", content: system },
+    ...fewShotExamples,
+    { 
+      role: "user", 
+      content: cleanedInput
+    },
+  ];
 
   const res = await fetch(`${API_BASE}/chat/completions`, {
     method: "POST",
@@ -189,14 +230,8 @@ async function callLLM(cleanedInput: string, targetMax: number, inputCount: numb
       model: MODEL,
       temperature: 0.0,
       max_tokens: maxTokens,
-      stop: ["\n\n","```","Biyografi","Not:"],
-      messages: [
-        { role: "system", content: system },
-        { 
-          role: "user", 
-          content: `Aşağıdaki metni SADECE düzelt, anlamını değiştirme:\n\n${cleanedInput}\n\nSadece düzeltilmiş metni döndür, başka bir şey yazma.`
-        },
-      ],
+      stop: ["\n\n","```","Biyografi","Not"],
+      messages,
     }),
   });
 
@@ -205,9 +240,7 @@ async function callLLM(cleanedInput: string, targetMax: number, inputCount: numb
   let text: string = data?.choices?.[0]?.message?.content ?? data?.choices?.[0]?.text ?? "";
 
   text = text.trim().replace(/^[\s"'""„«»]+|[\s"'""„«»]+$/g, "");
-  
-  // Başlık/not gibi eklemeler varsa sil
-  text = text.replace(/^(Düzeltilmiş metin|Not|Örnek):\s*/i, "");
+  text = text.replace(/^(Düzeltilmiş|Çıktı|Sonuç):\s*/i, "");
   
   if (!text) throw new Error("Empty LLM response");
   return text;
@@ -224,29 +257,32 @@ Deno.serve(async (req) => {
     const rawBioInput = (body?.rawBio ?? "").toString().trim();
     if (!rawBioInput) return bad("`rawBio` is required in JSON body");
 
-    // 1) Girdi profanity temizliği
+    // 1) Profanity temizliği
     const inSan = sanitizeProfanity(rawBioInput);
     let cleanedInput = inSan.cleaned;
     const inFuzzy = sanitizeProfanityFuzzy(cleanedInput);
     cleanedInput = inFuzzy.cleaned;
 
-    // Dinamik hedefleri hesapla
+    // 2) Önce yazım düzeltmeleri yap (LLM'e göndermeden)
+    cleanedInput = preCorrectSpelling(cleanedInput);
+
+    // Dinamik hedefler
     const inputHadRush = /(?:yoğun|kalabalık|pik|rush)/i.test(cleanedInput);
     const inputSentenceCount = countSentences(cleanedInput);
     const target = pickTargetRange(inputSentenceCount);
 
-    // 2) LLM
+    // 3) LLM çağrısı (few-shot ile)
     let llmText = await callLLM(cleanedInput, target.max, inputSentenceCount, inputHadRush);
 
-    // 3) Yerel post-processing
+    // 4) Post-processing
     llmText = neutralizeSubjectivity(llmText);
     llmText = mergeRedundant(llmText);
     if (inputHadRush) llmText = ensureRushMention(llmText);
 
-    // Sıkı tavan: en fazla 4 cümle
+    // Sıkı tavan: 4 cümle
     llmText = enforceSentenceCap(llmText, 4);
 
-    // 4) Çıkış profanity temizliği
+    // 5) Çıkış profanity temizliği
     const outSan = sanitizeProfanity(llmText);
     let improvedBio = outSan.cleaned;
     const outFuzzy = sanitizeProfanityFuzzy(improvedBio);
