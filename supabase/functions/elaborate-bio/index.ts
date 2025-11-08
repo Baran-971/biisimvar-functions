@@ -93,20 +93,98 @@ function enforceSentenceCap(text: string, maxSentences: number): string {
 
 // ========== YAZIM DÜZELTMELERİ SÖZLÜĞÜ ==========
 const SPELLING_FIXES: Record<string, string> = {
+  // Konuşma dili → Geniş zaman
   "öğrendm": "öğrendim",
   "biliyom": "bilirim",
   "yapıyom": "yaparım",
+  "yapıyorum": "yaparım",
   "geliyom": "gelirim",
+  "geliyorum": "gelirim",
   "çalışıyom": "çalışırım",
+  "çalışıyorum": "çalışırım",
+  "biliyorum": "bilirim",
+  "yapiyorum": "yaparım",
+  "calışıyorum": "çalışırım",
+  "gidiyom": "giderim",
+  "gidiyorum": "giderim",
+  "alıyom": "alırım",
+  "alıyorum": "alırım",
+  "veriyom": "veririm",
+  "veriyorum": "veririm",
+  
+  // Yemek/mutfak terimleri
   "hamacun": "lahmacun",
   "hamurcun": "lahmacun",
   "hamurcuğun": "lahmacun",
   "lahmacun": "lahmacun",
+  "pide": "pide",
+  "börek": "börek",
+  "borek": "börek",
+  "çorba": "çorba",
+  "corba": "çorba",
+  "kebap": "kebap",
+  "kebab": "kebap",
+  "döner": "döner",
+  "doner": "döner",
+  "köfte": "köfte",
+  "kofte": "köfte",
+  
+  // Yaygın yazım hataları (TDK'ya göre doğru olanlar)
   "restorant": "restoran",
   "restarant": "restoran",
   "resturant": "restoran",
   "ocakbaşı": "ocakbaşı",
   "ockbaşı": "ocakbaşı",
+  "egzos": "egzoz",
+  "otobus": "otobüs",
+  "otobüs": "otobüs",
+  "şoför": "şoför",
+  "soför": "şoför",
+  "garson": "garson",
+  "kasiyer": "kasiyer",
+  "müdür": "müdür",
+  "mudur": "müdür",
+  "patrona": "patrona",
+  "müşteri": "müşteri",
+  "musteri": "müşteri",
+  "temizlik": "temizlik",
+  "temizlikci": "temizlikçi",
+  "asçı": "aşçı",
+  "aşçı": "aşçı",
+  "garsonluk": "garsonluk",
+  "kasiyerlik": "kasiyerlik",
+  
+  // Güncel yaygın hatalar (sosyal medya etkisi)
+  "bişey": "bir şey",
+  "bisey": "bir şey",
+  "nası": "nasıl",
+  "nasıl": "nasıl",
+  "bi": "bir",
+  "bı": "bir",
+  "neden": "neden",
+  "niye": "neden",
+  "yani": "",
+  "işte": "",
+  "falan": "",
+  "filan": "",
+  "mı": "mi",
+  "mi": "mi",
+  
+  // Zaman ifadeleri
+  "sene": "yıl",
+  "senedir": "yıldır",
+  "aydir": "aydır",
+  "aydır": "aydır",
+  
+  // İş yeri terimleri
+  "restoranda": "restoranda",
+  "kafede": "kafede",
+  "otelde": "otelde",
+  "fabrikada": "fabrikada",
+  "magazada": "mağazada",
+  "mağazada": "mağazada",
+  "markette": "markette",
+  "marketde": "markette",
 };
 
 function preCorrectSpelling(text: string): string {
@@ -120,10 +198,30 @@ function preCorrectSpelling(text: string): string {
 
 function neutralizeSubjectivity(text: string): string {
   const patterns: Array<[RegExp, string]> = [
+    // ÖNCELİKLİ: Birleşik duygusal ifadeleri tamamen sil (LLM'in uydurduğu ifadeler)
+    [/\bçok\s+iyi\s+hissediyorum\b/gi, ""],
+    [/\biyi\s+hissediyorum\b/gi, ""],
+    [/\bçok\s+mutluyum\b/gi, ""],
+    [/\bmemnunum\b/gi, ""],
+    [/\bseviyorum\b/gi, ""],
+    [/\bseverim\b/gi, ""],
+    
+    // Şimdiki zaman → Geniş zaman dönüşümleri
+    [/\byapıyorum\b/gi, "yaparım"],
+    [/\bçalışıyorum\b/gi, "çalışırım"],
+    [/\bhazırlıyorum\b/gi, "hazırlarım"],
+    [/\bpişiriyorum\b/gi, "pişiririm"],
+    [/\byapabiliyorum\b/gi, "yapabilirim"],
+    [/\bkullanıyorum\b/gi, "kullanırım"],
+    [/\bhissediyorum\b/gi, ""], // Tek başına da sil
+    [/\bdüşünüyorum\b/gi, ""],
+    
+    // Öznel ifadeler
     [/\bçok\s+iyi\s+biliyorum\b/gi, "iyi bilirim"],
     [/\biyi\s+biliyorum\b/gi, "bilirim"],
     [/\bher zaman\b/gi, ""],
     [/\bsağlarım\b/gi, "destek olurum"],
+    [/\bçok\s+iyi\b/gi, ""], // 'çok iyi' genel temizlik
     [/\bçok\b/gi, ""],
     [/\başırı\b/gi, ""],
     [/\bmükemmel\b/gi, ""],
@@ -133,6 +231,8 @@ function neutralizeSubjectivity(text: string): string {
     [/\bbenim için önemlidir\b/gi, "önemserim"],
     [/\bhiç sorun teşkil etmiyor\b/gi, "alışığımdır"],
     [/\biş arkadaşlarımla uyumlu bir şekilde çalışıyorum\b/gi, "ekip çalışmasına uyum sağlarım"],
+    
+    // Fazla boşluk temizleme (en sonda)
     [/\s{2,}/g, " "],
   ];
   let out = text;
@@ -167,22 +267,20 @@ async function callLLM(cleanedInput: string, targetMax: number, inputCount: numb
 
   const system = `Sen bir Türkçe metin düzeltme botusun. Görevi SADECE yazım ve gramer hatalarını düzeltmek, cümleleri akıcı hale getirmek.
 
-MUTLAKA UYULMASI GEREKEN KURALLAR:
-1. KELİMELERİN ANLAMINI DEĞİŞTİRME - kişi ne demişse onu koru
-2. YENİ BİLGİ EKLEME - sadece düzelt
-3. TERİMLERİ OLDUĞU GİBİ KULLAN - farklı yorumlama
-4. Maksimum ${targetMax} cümle
+KESİNLİKLE YAPMA:
+🚫 YENİ BİLGİ EKLEME (hissediyorum, düşünüyorum, seviyorum gibi duygular EKLEME)
+🚫 ANLAM DEĞİŞTİRME (kişi ne demişse onu koru)
+🚫 KELİME YORUMLAMA (tavuk yapmak ≠ tavuk yetiştiriciliği)
+🚫 ÖZNEL İFADE (çok iyi, mükemmel, süper gibi kelimeler)
 
-İZİN VERİLEN:
-✓ Yazım düzeltme: öğrendm → öğrendim
-✓ Gramer: yapıyom → yaparım
-✓ Cümle birleştirme: kısa parçaları akıcı cümleler yap
-✓ Gereksiz tekrar/dolgu silme
+SADECE YAP:
+✅ Yazım düzelt: öğrendm → öğrendim, hamacun → lahmacun
+✅ Şimdiki zaman → Geniş zaman: yapıyorum → yaparım, çalışıyorum → çalışırım
+✅ Cümle birleştir: kısa parçaları akıcı cümleler yap
+✅ Gereksiz tekrar/dolgu sil
+✅ Maksimum ${targetMax} cümle
 
-YASAKLAR:
-❌ Anlam değiştirme
-❌ Yeni unvan/beceri ekleme
-❌ Kelime yorumlama (örn: tavuk yapmak ≠ tavuk yetiştiriciliği)`;
+ÖNEMLI: Sadece verilen bilgileri düzelt, ASLA yeni bilgi/duygu/yorum ekleme!`;
 
   // FEW-SHOT EXAMPLES
   const fewShotExamples = [
@@ -196,11 +294,11 @@ YASAKLAR:
     },
     {
       role: "user",
-      content: "restorantta çalıştım 3 sene. garsonluk yaptm. şimdi aşçı yardımcısıyım."
+      content: "restorantta garsonluk yaptm 2 sene. şimdi hamacun yapıyom. yoğun saatlerde de çalışıyom çok iyi."
     },
     {
       role: "assistant",
-      content: "3 yıl restoranda garsonluk yaptım. Şimdi aşçı yardımcısıyım."
+      content: "2 yıl restoranda garsonluk yaptım. Şimdi lahmacun yaparım. Yoğun saatlerde çalışmaya alışığım."
     },
     {
       role: "user",
@@ -228,9 +326,9 @@ YASAKLAR:
     headers: { Authorization: `Bearer ${API_KEY}`, "Content-Type": "application/json" },
     body: JSON.stringify({
       model: MODEL,
-      temperature: 0.0,
+      temperature: 0.0, // tam deterministik
       max_tokens: maxTokens,
-      stop: ["\n\n","```","Biyografi","Not"],
+      stop: ["\n\n","```","Biyografi","Not:"],
       messages,
     }),
   });
