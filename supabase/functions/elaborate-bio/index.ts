@@ -189,7 +189,7 @@ async function callLLM(cleanedInput: string, targetMax: number, inputCount: numb
       model: MODEL,
       temperature: 0.0,
       max_tokens: maxTokens,
-      stop: ["\n\n","```","Biyografi","Not:","Örnek:"],
+      stop: ["\n\n","```","Biyografi","Not:"],
       messages: [
         { role: "system", content: system },
         { 
