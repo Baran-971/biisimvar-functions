@@ -12,7 +12,7 @@ const corsHeaders = {
 const API_BASE =
   Deno.env.get("OPENAI_BASE_URL") ?? "https://api.groq.com/openai/v1";
 const API_KEY = Deno.env.get("OPENAI_API_KEY") ?? "";
-const MODEL = Deno.env.get("LLM_MODEL") ?? "llama-3.1-8b-instant";
+const MODEL = Deno.env.get("LLM_MODEL") ?? "openai/gpt-oss-120b";
 
 const bad = (detail: any, code = 400) =>
   new Response(
