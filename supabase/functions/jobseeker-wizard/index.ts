@@ -1,32 +1,45 @@
 // deno-lint-ignore-file no-explicit-any
 // Hybrid (optimize) wizard – parse + chat + token optimization
+
 // ==== Ortak CORS / LLM Ayarları ====
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-  "Access-Control-Allow-Methods": "POST, OPTIONS"
+  "Access-Control-Allow-Headers":
+    "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
-const API_BASE = Deno.env.get("OPENAI_BASE_URL") ?? "https://api.groq.com/openai/v1";
+
+const API_BASE =
+  Deno.env.get("OPENAI_BASE_URL") ?? "https://api.groq.com/openai/v1";
 const API_KEY = Deno.env.get("OPENAI_API_KEY") ?? "";
 const MODEL = Deno.env.get("LLM_MODEL") ?? "llama-3.1-8b-instant";
-const bad = (detail, code = 400)=>new Response(JSON.stringify({
-    error: "bad_request",
-    detail
-  }), {
-    status: code,
-    headers: {
-      "Content-Type": "application/json",
-      ...corsHeaders
-    }
-  });
-const ok = (body)=>new Response(JSON.stringify(body), {
+
+const bad = (detail: any, code = 400) =>
+  new Response(
+    JSON.stringify({
+      error: "bad_request",
+      detail,
+    }),
+    {
+      status: code,
+      headers: {
+        "Content-Type": "application/json",
+        ...corsHeaders,
+      },
+    },
+  );
+
+const ok = (body: any) =>
+  new Response(JSON.stringify(body), {
     status: 200,
     headers: {
       "Content-Type": "application/json",
-      ...corsHeaders
-    }
+      ...corsHeaders,
+    },
   });
+
 // ==== Küfür Filtresi (Profanity Filter) ====
+
 const BANNED_WORDS = [
   "amk",
   "amina",
@@ -52,15 +65,28 @@ const BANNED_WORDS = [
   "top",
   "serefsiz",
   "şerefsiz",
-  "kahpe"
+  "kahpe",
 ];
-function normalizeText(tr) {
-  return tr.toLocaleLowerCase("tr").replaceAll(/ç/g, "c").replaceAll(/ğ/g, "g").replaceAll(/ı/g, "i").replaceAll(/i̇/g, "i").replaceAll(/ö/g, "o").replaceAll(/ş/g, "s").replaceAll(/ü/g, "u");
+
+function normalizeText(tr: string): string {
+  return tr
+    .toLocaleLowerCase("tr")
+    .replaceAll(/ç/g, "c")
+    .replaceAll(/ğ/g, "g")
+    .replaceAll(/ı/g, "i")
+    .replaceAll(/i̇/g, "i")
+    .replaceAll(/ö/g, "o")
+    .replaceAll(/ş/g, "s")
+    .replaceAll(/ü/g, "u");
 }
-const BANNED_SET = new Set(BANNED_WORDS.map((w)=>normalizeText(w)));
-function sanitizeProfanity(text) {
-  const replaced = new Set();
-  const cleaned = text.replace(/\p{L}+/gu, (word)=>{
+
+const BANNED_SET = new Set(BANNED_WORDS.map((w) => normalizeText(w)));
+
+function sanitizeProfanity(
+  text: string,
+): { cleaned: string; replaced: string[] } {
+  const replaced = new Set<string>();
+  const cleaned = text.replace(/\p{L}+/gu, (word) => {
     const norm = normalizeText(word);
     if (BANNED_SET.has(norm)) {
       replaced.add(word);
@@ -70,47 +96,63 @@ function sanitizeProfanity(text) {
   });
   return {
     cleaned,
-    replaced: Array.from(replaced)
+    replaced: Array.from(replaced),
   };
 }
-function normalizeLettersOnly(s) {
+
+function normalizeLettersOnly(s: string): string {
   // Sadece harfleri tutar ve normalleştirir.
   return normalizeText(s).replace(/[^\p{L}]+/gu, "");
 }
-function sanitizeProfanityFuzzy(text) {
+
+function sanitizeProfanityFuzzy(
+  text: string,
+): { cleaned: string; matched: string[] } {
   // 2-6 karakterli yasak kelimeleri harf aralarına başka karakterler girmiş olsa bile yakalamaya çalışır.
-  const shortBanneds = Array.from(BANNED_SET).filter((w)=>w.length >= 2 && w.length <= 6);
-  if (shortBanneds.length === 0) return {
-    cleaned: text,
-    matched: []
-  };
+  const shortBanneds = Array.from(BANNED_SET).filter((w) =>
+    w.length >= 2 && w.length <= 6
+  );
+  if (shortBanneds.length === 0) {
+    return {
+      cleaned: text,
+      matched: [],
+    };
+  }
   let cleaned = text;
-  const matched = [];
-  cleaned = cleaned.replace(/(\p{L})([^\p{L}]*)?(\p{L})([^\p{L}]*)?(\p{L})?([^\p{L}]*)?(\p{L})?/gu, (m)=>{
-    const lettersOnly = normalizeLettersOnly(m);
-    if (lettersOnly && shortBanneds.includes(lettersOnly) && lettersOnly.length >= 2) {
-      matched.push(m);
-      return "***";
-    }
-    return m;
-  });
+  const matched: string[] = [];
+  cleaned = cleaned.replace(
+    /(\p{L})([^\p{L}]*)?(\p{L})([^\p{L}]*)?(\p{L})?([^\p{L}]*)?(\p{L})?/gu,
+    (m) => {
+      const lettersOnly = normalizeLettersOnly(m);
+      if (lettersOnly && shortBanneds.includes(lettersOnly) &&
+        lettersOnly.length >= 2) {
+        matched.push(m);
+        return "***";
+      }
+      return m;
+    },
+  );
   return {
     cleaned,
-    matched
+    matched,
   };
 }
-function fullSanitize(text) {
+
+function fullSanitize(text: string): string {
   let out = sanitizeProfanity(text).cleaned;
   out = sanitizeProfanityFuzzy(out).cleaned;
   return out;
 }
+
 // Sigorta kelimesi tespiti (benefits step için)
-function mentionsSigorta(text) {
+function mentionsSigorta(text: string): boolean {
   if (!text) return false;
   const norm = normalizeText(text);
   return norm.includes("sigorta") || norm.includes("sgk");
 }
-// Sıralı alanlar (step sırası)
+
+// ==== Form / Enum / Maaş limitleri ====
+
 const STEP_FIELDS = [
   "p_name",
   "p_birthday_year",
@@ -122,49 +164,40 @@ const STEP_FIELDS = [
   "p_salary_min",
   "p_tip_preference",
   "p_experience",
-  "p_bio"
+  "p_bio",
 ];
+
 const ENUMS = {
-  startDays: [
-    "yarın",
-    "3 gün içinde",
-    "1 hafta içinde"
-  ],
-  shifts: [
-    "sabah",
-    "öğle",
-    "akşam"
-  ],
-  benefits: [
-    "yemek",
-    "ulaşım",
-    "özel gün izni"
-  ],
+  startDays: ["yarın", "3 gün içinde", "1 hafta içinde"],
+  shifts: ["sabah", "öğle", "akşam"],
+  benefits: ["yemek", "ulaşım", "özel gün izni"],
   attributes: [
     "insan ilişkileri iyi",
     "sorun çözen",
     "konuşkan",
     "titiz",
     "çabuk öğrenen",
-    "zamanında işe gelen"
+    "zamanında işe gelen",
   ],
-  genders: [
-    "kadın",
-    "erkek",
-    "belirtmek istemiyorum"
-  ],
-  tips: [
-    "bahşiş çalışana ait",
-    "ortak bahşiş",
-    "bahşiş yok"
-  ]
+  genders: ["kadın", "erkek", "belirtmek istemiyorum"],
+  tips: ["bahşiş çalışana ait", "ortak bahşiş", "bahşiş yok"],
 };
+
+// Maaş aralığı (hard limitler)
+const MIN_SALARY = 22104; // Asgari ücret
+const MAX_SALARY = 100000; // Üst sınır
+
 // Küçük yardımcılar (server-side sanitization)
-function ensureStringArray(value) {
+function ensureStringArray(value: any): string[] {
   if (!Array.isArray(value)) return [];
-  return value.map((v)=>v !== null && v !== undefined ? String(v).trim() : "").filter((s)=>s.length > 0);
+  return value
+    .map((v) =>
+      v !== null && v !== undefined ? String(v).trim() : ""
+    )
+    .filter((s) => s.length > 0);
 }
-function coerceNumberOrNull(v) {
+
+function coerceNumberOrNull(v: any): number | null {
   if (v === null || v === undefined || v === "") return null;
   // Virgül, nokta, TL simgeleri vs temizle
   const s = String(v).replace(/[,.]/g, "").replace(/[^\d]/g, "").trim();
@@ -173,44 +206,35 @@ function coerceNumberOrNull(v) {
   if (!Number.isFinite(n) || n < 0) return null;
   return n;
 }
-function coerceEnum(value, allowed) {
+
+function coerceEnum(value: any, allowed: string[]): string | undefined {
   if (value === null || value === undefined) return undefined;
   const s = String(value).trim();
   if (!s) return undefined;
-  const match = allowed.find((opt)=>opt.toLowerCase() === s.toLowerCase());
+  const match = allowed.find((opt) => opt.toLowerCase() === s.toLowerCase());
   return match;
 }
+
 // Sadece ilgili step için enum gönderimi (token optimizasyonu)
-function getRelevantEnums(stepIndex) {
-  switch(stepIndex){
+function getRelevantEnums(stepIndex: number): Record<string, string[]> {
+  switch (stepIndex) {
     case 2:
-      return {
-        p_gender: ENUMS.genders
-      };
+      return { p_gender: ENUMS.genders };
     case 3:
-      return {
-        p_start_day: ENUMS.startDays
-      };
+      return { p_start_day: ENUMS.startDays };
     case 4:
-      return {
-        p_shift_prefs: ENUMS.shifts
-      };
+      return { p_shift_prefs: ENUMS.shifts };
     case 5:
-      return {
-        p_benefits: ENUMS.benefits
-      };
+      return { p_benefits: ENUMS.benefits };
     case 6:
-      return {
-        p_attributes: ENUMS.attributes
-      };
+      return { p_attributes: ENUMS.attributes };
     case 8:
-      return {
-        p_tip_preference: ENUMS.tips
-      };
+      return { p_tip_preference: ENUMS.tips };
     default:
       return {};
   }
 }
+
 // TR / EN soru metinleri
 const QUESTIONS_TR = [
   "Merhaba! Önce seni tanıyalım. Adını ve soyadını yazabilir misin? Sana nasıl hitap edeyim?",
@@ -223,8 +247,9 @@ const QUESTIONS_TR = [
   "Aylık maaş beklentin nedir? Bir maaş aralığını rakamla yazarsan sevinirim.",
   "Bahşiş nasıl olsun istersin? 'Bahşiş Çalışana Ait', 'Ortak Bahşiş' veya 'Bahşiş Yok' diyebilirsin.",
   "Kısaca deneyiminden bahseder misin? Nerede, ne kadar süre çalıştın, neler yaptın, uzmanlıkların neler?",
-  "Son olarak, topladığım tüm bu bilgileri kullanarak senin için profesyonel bir biyografi oluşturacağım. 'Tamam, oluştur' demen yeterli mi?"
+  "Son olarak, topladığım tüm bu bilgileri kullanarak senin için profesyonel bir biyografi oluşturacağım. 'Tamam, oluştur' demen yeterli mi?",
 ];
+
 const QUESTIONS_EN = [
   "Hi! Let’s get to know you. Could you write your first and last name? How should I address you?",
   "What is your year of birth?",
@@ -236,180 +261,230 @@ const QUESTIONS_EN = [
   "What is your monthly salary expectation? It would be great if you could write a numeric range.",
   "How would you like the tip policy to be? You can say 'Tips Belong to Employee', 'Shared Tips' or 'No Tips'.",
   "Can you briefly describe your experience? Where did you work, for how long, what did you do, what are your specialties?",
-  "Finally, I’ll use all this information to create a professional biography for you. Is it okay if I go ahead and create it now? Just say 'Yes, create it'."
+  "Finally, I’ll use all this information to create a professional biography for you. Is it okay if I go ahead and create it now? Just say 'Yes, create it'.",
 ];
-function getQuestion(lang, step) {
+
+function getQuestion(lang: string, step: number): string {
   const arr = lang === "en" ? QUESTIONS_EN : QUESTIONS_TR;
   if (step < 0 || step >= arr.length) {
-    return lang === "en" ? "All questions are completed. You can review your profile." : "Tüm soruları tamamladık. Profilini inceleyebilirsin.";
+    return lang === "en"
+      ? "All questions are completed. You can review your profile."
+      : "Tüm soruları tamamladık. Profilini inceleyebilirsin.";
   }
   return arr[step];
 }
+
 // Form state içinde sıradaki eksik alanı bulma
-function computeNextStep(form) {
-  for(let i = 0; i < STEP_FIELDS.length; i++){
+function computeNextStep(
+  form: any,
+): { nextStep: number; isFinished: boolean } {
+  for (let i = 0; i < STEP_FIELDS.length; i++) {
     const key = STEP_FIELDS[i];
     const value = form[key];
+
     if (value === undefined || value === null) {
-      return {
-        nextStep: i,
-        isFinished: false
-      };
+      return { nextStep: i, isFinished: false };
     }
+
     if (typeof value === "string" && !value.trim()) {
-      return {
-        nextStep: i,
-        isFinished: false
-      };
+      return { nextStep: i, isFinished: false };
     }
+
     if (Array.isArray(value) && value.length === 0) {
-      if (key === "p_shift_prefs" || key === "p_benefits" || key === "p_attributes") {
-        continue;
+      if (key === "p_shift_prefs" || key === "p_benefits" ||
+        key === "p_attributes") {
+        continue; // boş dizi kabul
       }
-      return {
-        nextStep: i,
-        isFinished: false
-      };
+      return { nextStep: i, isFinished: false };
     }
+
     if (key === "p_salary_min") {
       const minVal = value;
       const maxVal = form.p_salary_max;
-      const isMinValid = typeof minVal === "number" && Number.isFinite(minVal) && minVal >= 0;
-      const isMaxValid = typeof maxVal === "number" && Number.isFinite(maxVal) && maxVal >= 0;
-      // Hem min hem max değerinin geçerli olması ve min'in max'tan küçük/eşit olması gerekir.
-      if (!isMinValid || !isMaxValid || isMinValid && isMaxValid && minVal > maxVal) {
-        return {
-          nextStep: i,
-          isFinished: false
-        };
+      const isMinValid = typeof minVal === "number" &&
+        Number.isFinite(minVal) &&
+        minVal >= MIN_SALARY &&
+        minVal <= MAX_SALARY;
+      const isMaxValid = typeof maxVal === "number" &&
+        Number.isFinite(maxVal) &&
+        maxVal >= MIN_SALARY &&
+        maxVal <= MAX_SALARY;
+
+      if (
+        !isMinValid ||
+        !isMaxValid ||
+        (isMinValid && isMaxValid && minVal > maxVal)
+      ) {
+        return { nextStep: i, isFinished: false };
       }
     }
   }
-  return {
-    nextStep: STEP_FIELDS.length,
-    isFinished: true
-  };
+  return { nextStep: STEP_FIELDS.length, isFinished: true };
 }
-const STEP_CONFIGS = {
-  0: {
-    field: "p_name",
-    label: "name",
-    kind: "name"
-  },
-  1: {
-    field: "p_birthday_year",
-    label: "birth year",
-    kind: "birth_year"
-  },
+
+const STEP_CONFIGS: Record<number, any> = {
+  0: { field: "p_name", label: "name", kind: "name" },
+  1: { field: "p_birthday_year", label: "birth year", kind: "birth_year" },
   2: {
     field: "p_gender",
     label: "gender",
     kind: "gender",
-    vagueHintTr: "Kadın / erkek / belirtmek istemiyorum arasından birini seçmen gerekiyor.",
-    vagueHintEn: "You need to choose one of: female / male / prefer not to say."
+    vagueHintTr:
+      "Kadın / erkek / belirtmek istemiyorum arasından birini seçmen gerekiyor.",
+    vagueHintEn:
+      "You need to choose one of: female / male / prefer not to say.",
   },
   3: {
     field: "p_start_day",
     label: "start day",
     kind: "start_day",
-    vagueHintTr: "Başlangıç için yarın, 3 gün içinde veya 1 hafta içinde gibi net bir zaman söylemen iyi olur.",
-    vagueHintEn: "Please choose a clear option like tomorrow, in 3 days or within 1 week."
+    vagueHintTr:
+      "Başlangıç için yarın, 3 gün içinde veya 1 hafta içinde gibi net bir zaman söylemen iyi olur.",
+    vagueHintEn:
+      "Please choose a clear option like tomorrow, in 3 days or within 1 week.",
   },
   4: {
     field: "p_shift_prefs",
     label: "shift preferences",
     kind: "shift",
-    vagueHintTr: "Daha fazla vardiya seçmek sana daha çok ilan gösterebilir, ama son karar senin.",
-    vagueHintEn: "Choosing more shifts can show you more jobs, but the final decision is yours."
+    vagueHintTr:
+      "Daha fazla vardiya seçmek sana daha çok ilan gösterebilir, ama son karar senin.",
+    vagueHintEn:
+      "Choosing more shifts can show you more jobs, but the final decision is yours.",
   },
   5: {
     field: "p_benefits",
     label: "benefits",
     kind: "benefits",
-    vagueHintTr: "Sana gerçekten önemli olan yan hakları seçmen, eşleşmelerin daha doğru olmasını sağlar.",
-    vagueHintEn: "Choosing benefits that really matter to you helps with better matches."
+    vagueHintTr:
+      "Sana gerçekten önemli olan yan hakları seçmen, eşleşmelerin daha doğru olmasını sağlar.",
+    vagueHintEn:
+      "Choosing benefits that really matter to you helps with better matches.",
   },
   6: {
     field: "p_attributes",
     label: "attributes",
     kind: "attributes",
-    vagueHintTr: "Seni en iyi anlatan 2-3 özelliği seçmen, işverenin seni daha iyi tanımasına yardım eder.",
-    vagueHintEn: "Picking 2–3 traits that describe you best helps employers understand you."
+    vagueHintTr:
+      "Seni en iyi anlatan 2-3 özelliği seçmen, işverenin seni daha iyi tanımasına yardım eder.",
+    vagueHintEn:
+      "Picking 2–3 traits that describe you best helps employers understand you.",
   },
   7: {
     field: "p_salary_min",
     label: "salary expectation",
     kind: "salary",
-    vagueHintTr: "Kabaca bir maaş aralığı söylemen, sana uygun ilanları filtrelememiz için önemli.",
-    vagueHintEn: "Giving at least an approximate salary range helps us filter better jobs for you."
+    vagueHintTr:
+      "Kabaca bir maaş aralığı söylemen, sana uygun ilanları filtrelememiz için önemli.",
+    vagueHintEn:
+      "Giving at least an approximate salary range helps us filter better jobs for you.",
   },
   8: {
     field: "p_tip_preference",
     label: "tip preference",
     kind: "tip",
-    vagueHintTr: "Bahşiş konusunda net olman, iş yeri beklentilerinle uyumu artırır.",
-    vagueHintEn: "Being clear about tip policy helps align with workplace expectations."
+    vagueHintTr:
+      "Bahşiş konusunda net olman, iş yeri beklentilerinle uyumu artırır.",
+    vagueHintEn:
+      "Being clear about tip policy helps align with workplace expectations.",
   },
   9: {
     field: "p_experience",
     label: "experience",
     kind: "experience",
-    vagueHintTr: "Kısaca nerede, ne kadar süre çalıştığını yazman yeterli, çok uzun olmasına gerek yok.",
-    vagueHintEn: "A short summary of where and how long you worked is enough, no need for long stories."
+    vagueHintTr:
+      "Kısaca nerede, ne kadar süre çalıştığını yazman yeterli, çok uzun olmasına gerek yok.",
+    vagueHintEn:
+      "A short summary of where and how long you worked is enough, no need for long stories.",
   },
   10: {
     field: "p_bio",
     label: "professional biography",
     kind: "bio_generation",
-    vagueHintTr: "Sana profesyonel bir biyografi hazırlamam için onay vermen gerekiyor. Bu metin işverenlere gösterilecek.",
-    vagueHintEn: "You need to approve the creation of your professional biography. This text will be shown to employers."
-  }
+    vagueHintTr:
+      "Sana profesyonel bir biyografi hazırlamam için onay vermen gerekiyor. Bu metin işverenlere gösterilecek.",
+    vagueHintEn:
+      "You need to approve the creation of your professional biography. This text will be shown to employers.",
+  },
 };
+
 // Step instruction
-function buildStepInstruction(stepIndex, lang, formState) {
+function buildStepInstruction(
+  stepIndex: number,
+  lang: string,
+  formState: any,
+): string {
   const cfg = STEP_CONFIGS[stepIndex];
   if (!cfg) {
     return `
 This step index is out of configured range. Do not change any field. Mark step_done as true and return empty updates and empty assistant_comment.
 `.trim();
   }
+
   const enumsForStep = getRelevantEnums(stepIndex);
-  const enumsSnippet = Object.keys(enumsForStep).length ? `Relevant enums for this step: ${JSON.stringify(enumsForStep)}.` : `This step does not use enums.`;
+  const enumsSnippet = Object.keys(enumsForStep).length
+    ? `Relevant enums for this step: ${JSON.stringify(enumsForStep)}.`
+    : `This step does not use enums.`;
   const vagueHint = lang === "tr" ? cfg.vagueHintTr : cfg.vagueHintEn;
-  switch(cfg.kind){
+
+  switch (cfg.kind) {
     case "name":
       return `
 Current STEP = ${stepIndex} for field "${cfg.field}" (name).
 
 - Extract the person's preferred name (can include surname) from the answer.
 - If clear, set updates.p_name = "<name>" and step_done = true.
-- If not clear, keep updates.p_name null/empty, set step_done = false and ask them again with a short friendly question.
+- If not clear, keep updates.p_name null/empty, set step_done = false.
+
+TURKISH ASSISTANT COMMENT RULES:
+- If language_code is "tr" AND step_done = true:
+  - assistant_comment SHOULD be something like: "Merhaba, doğum yılın nedir?" or "Merhaba <isim>, doğum yılın nedir?".
+  - Always talk to the user with "sen / senin", NEVER use "biz / bizim / ismimiz".
+- If language_code is "tr" AND step_done = false:
+  - assistant_comment MUST be: "Adını tekrar, daha net yazar mısın?"
+
+ENGLISH ASSISTANT COMMENT RULES:
+- If language_code is "en" AND step_done = true:
+  - assistant_comment SHOULD be: "Nice to meet you. What is your year of birth?"
+- If language_code is "en" AND step_done = false:
+  - assistant_comment MUST be: "Could you please write your name again more clearly?"
 
 ${enumsSnippet}
 `.trim();
+
     case "birth_year":
       return `
 Current STEP = ${stepIndex} for field "${cfg.field}" (birth year).
 
 - Extract a 4-digit birth year if possible (e.g. "1986").
-- The year must be reasonable (e.g. not in the future, not before 1900) but you can be tolerant; do not block the flow for small inconsistencies.
+- The year must be reasonable (not in the future, not before 1900), but be tolerant.
 - If clear, set updates.p_birthday_year and step_done = true.
-- If unclear, leave null and step_done = false and ask again.
+- If unclear, leave p_birthday_year null/empty and step_done = false.
+
+TURKISH ASSISTANT COMMENT RULE (CRITICAL):
+- If language_code is "tr" AND step_done = false, assistant_comment MUST be EXACTLY:
+  "Doğum yılını lütfen rakamla yazar mısın?"
+
+ENGLISH ASSISTANT COMMENT RULE:
+- If language_code is "en" AND step_done = false, assistant_comment MUST be EXACTLY:
+  "Could you write your year of birth in numbers?"
 
 ${enumsSnippet}
 `.trim();
+
     case "gender":
       return `
 Current STEP = ${stepIndex} for field "${cfg.field}" (gender).
 
 - Map answer to one of: ${JSON.stringify(ENUMS.genders)}.
 - If they say things like "doesn't matter / prefer not to say" map accordingly.
-- If still vague, leave null, step_done = false and ask clearly.
+- If still vague, leave null, set step_done = false and ask clearly.
 
 Vague hint for the user: ${vagueHint ?? ""}
 
 ${enumsSnippet}
 `.trim();
+
     case "start_day":
       return `
 Current STEP = ${stepIndex} for field "${cfg.field}" (start day).
@@ -421,6 +496,7 @@ Vague hint for the user: ${vagueHint ?? ""}
 
 ${enumsSnippet}
 `.trim();
+
     case "shift":
       return `
 Current STEP = ${stepIndex} for field "${cfg.field}" (shift preferences).
@@ -430,12 +506,12 @@ Current STEP = ${stepIndex} for field "${cfg.field}" (shift preferences).
 - If they clearly say they are fine with ALL shifts, you MAY set updates.p_shift_prefs = ["sabah","öğle","akşam"] and step_done = true.
 - If they say things like "fark etmez / sen karar ver / you decide / whatever" without clearly indicating ALL shifts, set updates.p_shift_prefs = [] and step_done = false.
 - In that case assistant_comment should EXPLAIN that choosing more shifts can show more jobs, but the final decision is theirs, and ask for their final choice.
-- If they clearly choose (e.g. "sabah ve akşam"), set that array and step_done = true.
 
 Vague hint for the user: ${vagueHint ?? ""}
 
 ${enumsSnippet}
 `.trim();
+
     case "benefits":
       return `
 Current STEP = ${stepIndex} for field "${cfg.field}" (benefits).
@@ -451,6 +527,7 @@ Vague hint for the user: ${vagueHint ?? ""}
 
 ${enumsSnippet}
 `.trim();
+
     case "attributes":
       return `
 Current STEP = ${stepIndex} for field "${cfg.field}" (attributes).
@@ -463,17 +540,20 @@ Vague hint for the user: ${vagueHint ?? ""}
 
 ${enumsSnippet}
 `.trim();
-    case "salary":
-      {
-        const salaryMsgTr = "Ben yapay zeka olduğum için bir gelirim yok. Ama senin maaşının senin için ne kadar önemli olduğunu biliyorum. Tutar hakkında yorum yapamam; maaş beklentini lütfen sadece rakamlarla ve mümkünse bir aralık olarak yaz.";
-        const salaryMsgEn = "Since I’m an AI, I don’t have an income. But I know your salary is very important for you. I can’t comment on the amount; please write your expected salary only as numbers and preferably as a range.";
-        return `
+
+    case "salary": {
+      const salaryMsgTr =
+        "Ben yapay zeka olduğum için bir gelirim yok. Ama senin maaşının senin için ne kadar önemli olduğunu biliyorum. Tutar hakkında yorum yapamam; maaş beklentini lütfen sadece rakamlarla ve mümkünse bir aralık olarak yaz.";
+      const salaryMsgEn =
+        "Since I’m an AI, I don’t have an income. But I know your salary is very important for you. I can’t comment on the amount; please write your expected salary only as numbers and preferably as a range.";
+      return `
 Current STEP = ${stepIndex} for fields "p_salary_min" and "p_salary_max" (salary expectation).
 
 PARSING:
 - Extract net monthly salary in Turkish Lira.
-- If they give a single value (e.g. 25000), set BOTH p_salary_min and p_salary_max to that numeric value.
+- If they give a single value, set BOTH p_salary_min and p_salary_max to that numeric value.
 - If they give a range (e.g. "20-25 bin", "30 ile 35 arası"), map that to numeric min and max.
+- Server will later validate that both are between ${MIN_SALARY} and ${MAX_SALARY}.
 - If the answer is vague ("farketmez", "you decide", "whatever"), set BOTH p_salary_min and p_salary_max to null, step_done = false and ask them to choose at least an approximate range.
 
 ASSISTANT MESSAGE RULE (VERY IMPORTANT):
@@ -490,7 +570,8 @@ Vague hint for the user: ${vagueHint ?? ""}
 
 ${enumsSnippet}
 `.trim();
-      }
+    }
+
     case "tip":
       return `
 Current STEP = ${stepIndex} for field "${cfg.field}" (tip preference).
@@ -502,6 +583,7 @@ Vague hint for the user: ${vagueHint ?? ""}
 
 ${enumsSnippet}
 `.trim();
+
     case "experience":
       return `
 Current STEP = ${stepIndex} for field "${cfg.field}" (experience).
@@ -514,6 +596,7 @@ Vague hint for the user: ${vagueHint ?? ""}
 
 ${enumsSnippet}
 `.trim();
+
     case "bio_generation":
       return `
 Current STEP = ${stepIndex} for field "${cfg.field}" (Professional Biography Generation).
@@ -523,7 +606,7 @@ Current STEP = ${stepIndex} for field "${cfg.field}" (Professional Biography Gen
   - p_start_day, p_shift_prefs, p_benefits, p_attributes, p_tip_preference, p_experience, p_interests
 - You MUST NOT use or mention: p_name, p_birthday_year, p_gender, p_salary_min, p_salary_max.
 - Write a single, cohesive, engaging, and professional first-person summary.
-- Tone: suitable for a job application in the service sector (customer service, problem-solving, flexibility, reliability).
+- Tone: suitable for a job application in the service sector.
 - The user input for this step is just an "OK" signal (e.g., "Tamam", "Oluştur", "Yes"). Ignore its content for parsing.
 - If 'current_form_state' is complete enough (all fields except p_bio filled), you must generate the bio.
 - Set updates.p_bio = "<GENERATED_BIOGRAPHY>" and set step_done = true.
@@ -539,16 +622,30 @@ Collected Data to use for biography:
 ${JSON.stringify(formState, null, 2)}
 `.trim();
   }
+
+  return `
+This step index is out of configured range. Do not change any field. Mark step_done as true and return empty updates and empty assistant_comment.
+`.trim();
 }
+
 // ==== LLM – parse + konuşma (Hybrid – optimize) ====
-async function callExtractorLLM(stepIndex, languageCode, userInput, formState) {
+
+async function callExtractorLLM(
+  stepIndex: number,
+  languageCode: string,
+  userInput: string,
+  formState: any,
+): Promise<{ updates: any; step_done: boolean; assistant_comment: string }> {
   if (!API_KEY) throw new Error("OPENAI_API_KEY missing");
+
   const lang = languageCode === "en" ? "en" : "tr";
   const currentField = STEP_FIELDS[stepIndex];
   const enumsForStep = getRelevantEnums(stepIndex);
   const cfg = STEP_CONFIGS[stepIndex];
   const isBioStep = cfg?.kind === "bio_generation";
+
   let system = "";
+
   if (isBioStep) {
     system = `
 You are the professional biography generator for the "Bi İşim Var" job seeker wizard.
@@ -566,15 +663,15 @@ GENERAL RULES:
 - If the bio is successfully created, set updates.p_bio = "<GENERATED_BIOGRAPHY>" and set "step_done": true.
 - If critical fields are missing (especially p_experience), set step_done = false and ask the user to complete them first.
 
-IMPORTANT:
-- If you set "step_done": false, you MUST provide a clear assistant_comment explaining what is missing and what the user should write next.
+LANGUAGE STYLE (CRITICAL):
+- If language_code is "tr", always talk directly to the user in second person singular ("sen").
+- NEVER use first person plural in Turkish: do NOT use "biz", "bizim", "yapıyoruz", "yapalım", "ismimiz", "doğum yılımız", etc.
+- In Turkish assistant_comment, use sentences like "Biyografini hazırladım, aşağıdan kontrol edebilirsin." and always keep it short.
 
 OUTPUT FORMAT (JSON ONLY, NO EXTRA TEXT):
 
 {
-  "updates": { 
-    "p_bio": "..." 
-  },
+  "updates": { "p_bio": "..." },
   "step_done": true or false,
   "assistant_comment": "..."
 }
@@ -596,6 +693,11 @@ GENERAL RULES:
 - Keep assistant_comment short, friendly and focused on this step (max 2 sentences, except salary which has its own rule).
 - If you set "step_done": false, you MUST return a helpful assistant_comment (never leave it empty).
 
+LANGUAGE STYLE (CRITICAL):
+- If language_code is "tr", you MUST always talk directly to the user in second person singular ("sen").
+- NEVER use first person plural in Turkish: do NOT say "biz", "bizim", "yapıyoruz", "yapalım", "ismimiz", "doğum yılımız".
+- In Turkish you should prefer sentences like "Adın ne?", "Doğum yılın nedir?", "Maaş beklentini yazar mısın?".
+
 OUTPUT FORMAT (JSON ONLY, NO EXTRA TEXT):
 
 {
@@ -611,67 +713,78 @@ p_tip_preference, p_experience, p_bio, p_interests.
 Current step enums (if any): ${JSON.stringify(enumsForStep)}
 `.trim();
   }
+
   const stepInstruction = buildStepInstruction(stepIndex, lang, formState);
   const userPayload = {
     language_code: lang,
     step_index: stepIndex,
     answer: userInput,
-    current_form_state: formState
+    current_form_state: formState,
   };
+
   const messages = [
+    { role: "system" as const, content: system },
     {
-      role: "system",
-      content: system
+      role: "user" as const,
+      content:
+        `${stepInstruction}\n\nUSER_ANSWER_PAYLOAD:\n${JSON.stringify(userPayload)}`,
     },
-    {
-      role: "user",
-      content: `${stepInstruction}\n\nUSER_ANSWER_PAYLOAD:\n${JSON.stringify(userPayload)}`
-    }
   ];
+
   const res = await fetch(`${API_BASE}/chat/completions`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${API_KEY}`,
-      "Content-Type": "application/json"
+      "Content-Type": "application/json",
     },
     body: JSON.stringify({
       model: MODEL,
       temperature: 0.2,
       max_tokens: 512,
-      response_format: {
-        type: "json_object"
-      },
-      messages
-    })
+      response_format: { type: "json_object" },
+      messages,
+    }),
   });
+
   if (!res.ok) {
-    throw new Error(`Upstream ${res.status}: ${await res.text().catch(()=>"")}`);
+    throw new Error(
+      `Upstream ${res.status}: ${
+        await res.text().catch(() => "")
+      }`,
+    );
   }
+
   const data = await res.json();
-  let text = data?.choices?.[0]?.message?.content ?? data?.choices?.[0]?.text ?? "";
+  let text: string =
+    data?.choices?.[0]?.message?.content ??
+    data?.choices?.[0]?.text ??
+    "";
   text = text.trim();
+
   try {
     const parsed = JSON.parse(text);
     return {
       updates: parsed.updates ?? {},
       step_done: parsed.step_done === true,
-      assistant_comment: (parsed.assistant_comment ?? "").toString()
+      assistant_comment: (parsed.assistant_comment ?? "").toString(),
     };
-  } catch  {
+  } catch {
     // LLM'den geçersiz JSON gelirse hata mesajı
     return {
       updates: {},
       step_done: false,
-      assistant_comment: lang === "en" ? "Sorry, I couldn’t fully understand that. Could you write it a bit more clearly?" : "Üzgünüm, tam anlayamadım. Cevabını biraz daha net yazar mısın?"
+      assistant_comment: lang === "en"
+        ? "Sorry, I couldn’t fully understand that. Could you write it a bit more clearly?"
+        : "Üzgünüm, tam anlayamadım. Cevabını biraz daha net yazar mısın?",
     };
   }
 }
+
 // ==== Handler ====
-Deno.serve(async (req)=>{
+
+Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
-    return new Response("ok", {
-      headers: corsHeaders
-    });
+    return new Response("ok", { headers: corsHeaders });
   }
   if (req.method !== "POST") {
     return bad("Only POST is allowed", 405);
@@ -679,29 +792,42 @@ Deno.serve(async (req)=>{
   if (!API_KEY) {
     return bad("OPENAI_API_KEY is missing", 500);
   }
+
   const requestStart = Date.now();
+
   try {
-    const body = await req.json().catch(()=>({}));
+    const body = await req.json().catch(() => ({}));
     const userId = (body?.user_id ?? "").toString().trim();
     const languageCode = (body?.language_code ?? "tr").toString().toLowerCase();
     const userInputRaw = (body?.user_input_text ?? "").toString();
     const stepIndexRaw = Number(body?.step_index ?? 0);
-    const stepIndex = Number.isFinite(stepIndexRaw) && stepIndexRaw >= 0 ? Math.floor(stepIndexRaw) : 0;
+    const stepIndex = Number.isFinite(stepIndexRaw) && stepIndexRaw >= 0
+      ? Math.floor(stepIndexRaw)
+      : 0;
     const formState = body?.form_state ?? {};
+
     if (!userId) return bad("user_id is required");
+
     const isBioGenerationStep = STEP_FIELDS[stepIndex] === "p_bio";
     if (!isBioGenerationStep && !userInputRaw) {
       // Biyografi adımı hariç, kullanıcı girişi olmalı
       return bad("user_input_text is required");
     }
+
     // Gelen kullanıcı girdisini küfür ve hassas içerik açısından temizle
     const cleanedInput = fullSanitize(userInputRaw);
+
     // LLM'i çağır ve sonucu al
-    const llmResult = await callExtractorLLM(stepIndex, languageCode, cleanedInput, formState);
+    const llmResult = await callExtractorLLM(
+      stepIndex,
+      languageCode,
+      cleanedInput,
+      formState,
+    );
+
     const rawUpdates = llmResult.updates ?? {};
-    const safeUpdates = {
-      ...rawUpdates
-    };
+    const safeUpdates: any = { ...rawUpdates };
+
     // SAYISAL ALAN GÜVENLİĞİ
     if ("p_salary_min" in safeUpdates) {
       safeUpdates.p_salary_min = coerceNumberOrNull(safeUpdates.p_salary_min);
@@ -709,6 +835,7 @@ Deno.serve(async (req)=>{
     if ("p_salary_max" in safeUpdates) {
       safeUpdates.p_salary_max = coerceNumberOrNull(safeUpdates.p_salary_max);
     }
+
     // DİZİ ALANLAR GÜVENLİĞİ
     if ("p_shift_prefs" in safeUpdates) {
       safeUpdates.p_shift_prefs = ensureStringArray(safeUpdates.p_shift_prefs);
@@ -722,6 +849,7 @@ Deno.serve(async (req)=>{
     if ("p_interests" in safeUpdates) {
       safeUpdates.p_interests = ensureStringArray(safeUpdates.p_interests);
     }
+
     // ENUM ALANLAR GÜVENLİĞİ
     if ("p_gender" in safeUpdates) {
       const v = coerceEnum(safeUpdates.p_gender, ENUMS.genders);
@@ -738,11 +866,10 @@ Deno.serve(async (req)=>{
       if (!v) delete safeUpdates.p_tip_preference;
       else safeUpdates.p_tip_preference = v;
     }
+
     // Yeni formu oluştur
-    const newForm = {
-      ...formState,
-      ...safeUpdates
-    };
+    const newForm: any = { ...formState, ...safeUpdates };
+
     // Deneyim ve Biyografi alanlarını son bir küfür filtresinden geçir
     if (newForm.p_experience) {
       newForm.p_experience = fullSanitize(newForm.p_experience);
@@ -750,38 +877,57 @@ Deno.serve(async (req)=>{
     if (newForm.p_bio) {
       newForm.p_bio = fullSanitize(newForm.p_bio);
     }
+
     const lang = languageCode === "en" ? "en" : "tr";
     let stepDone = llmResult.step_done === true;
-    // Maaş aralığı için gerçekçilik kontrolü (örnek, genelde 30000-100000 arası bekleniyor)
+
+    // Maaş aralığı için gerçekçilik + limit kontrolü
     const isSalaryStep = STEP_FIELDS[stepIndex] === "p_salary_min";
-    let forcedSalaryMessage = null;
-    if (isSalaryStep && stepDone && newForm.p_salary_min != null && newForm.p_salary_max != null) {
-      const minSalary = newForm.p_salary_min;
-      const maxSalary = newForm.p_salary_max;
-      const MIN_REASONABLE = 30000;
-      const MAX_REASONABLE = 1000000;
-      if (minSalary < MIN_REASONABLE || maxSalary > MAX_REASONABLE) {
-        // "40" veya "40 milyar" gibi uç durumlar için tekrar onay iste
+    let forcedSalaryMessage: string | null = null;
+
+    if (
+      isSalaryStep &&
+      stepDone &&
+      newForm.p_salary_min != null &&
+      newForm.p_salary_max != null
+    ) {
+      const minSalary = newForm.p_salary_min as number;
+      const maxSalary = newForm.p_salary_max as number;
+      const MIN_REASONABLE = MIN_SALARY;
+      const MAX_REASONABLE = MAX_SALARY;
+
+      if (
+        minSalary < MIN_REASONABLE ||
+        maxSalary > MAX_REASONABLE ||
+        minSalary > maxSalary
+      ) {
+        // Aralık dışı veya saçma değerler -> sıfırla, tekrar iste
         newForm.p_salary_min = null;
         newForm.p_salary_max = null;
         stepDone = false;
-        forcedSalaryMessage = lang === "tr" ? "Yazdığın maaş rakamı biraz gerçek dışı görünüyor. Maaş beklentini lütfen sadece rakamlarla ve örneğin 30000 ile 100000 TL arasında olacak şekilde bir aralık yazar mısın?" : "The salary number you wrote looks a bit unrealistic. Could you please write your expected monthly salary again as numbers only, for example a range roughly between 30000 and 100000 TL?";
+
+        forcedSalaryMessage = lang === "tr"
+          ? `Yazdığın maaş rakamı biraz gerçek dışı görünüyor. Maaş beklentini lütfen asgari ücret olan ${MIN_SALARY} TL ile ${MAX_SALARY} TL arasında, sadece rakamlarla ve bir aralık olarak tekrar yazar mısın?`
+          : `The salary number you wrote looks a bit unrealistic. Please enter your expected monthly salary again as numbers only, with a range between ${MIN_REASONABLE} and ${MAX_REASONABLE} TL.`;
       }
     }
+
     // Yeni form durumuna göre sıradaki adımı belirle
     const { nextStep, isFinished } = computeNextStep(newForm);
     let assistant_reply = (llmResult.assistant_comment ?? "").trim();
-    // Eğer maaş adımında out-of-range sebebiyle override ettiysek, LLM yorumunu ez
+
+    // Eğer maaş adımında range out-of-bounds sebebiyle override ettiysek, LLM yorumunu ez
     if (forcedSalaryMessage) {
       assistant_reply = forcedSalaryMessage;
     }
-    let responseStepIndex;
+
+    let responseStepIndex: number;
     let responseIsFinished = false;
+
     if (!stepDone) {
       // Adım tamamlanmadıysa, mevcut adımda kal
       responseStepIndex = stepIndex;
       responseIsFinished = false;
-      // LLM bir yorum döndürmediyse veya salary override yoksa, mevcut adımın sorusunu tekrar sor
       if (!assistant_reply) {
         assistant_reply = getQuestion(lang, stepIndex);
       }
@@ -789,27 +935,35 @@ Deno.serve(async (req)=>{
       // Adım tamamlandıysa, bir sonraki adıma geç
       responseStepIndex = nextStep;
       responseIsFinished = isFinished;
-      let tail;
+
+      let tail: string;
       if (isFinished) {
-        // Tüm adımlar tamamlandı
-        tail = lang === "en" ? "Great, I have all the basic info I need. You can review your profile below and tap 'Let's Find A Job' when you’re ready." : "Harika, temel bilgilerin tamam. Aşağıdaki profilini kontrol edebilirsin; hazırsan 'İş Bulmaya Başlayalım' butonuna basabilirsin.";
+        tail = lang === "en"
+          ? "Great, I have all the basic info I need. You can review your profile below and tap 'Let's Find A Job' when you’re ready."
+          : "Harika, temel bilgilerin tamam. Aşağıdaki profilini kontrol edebilirsin; hazırsan 'İş Bulmaya Başlayalım' butonuna basabilirsin.";
       } else {
-        // Bir sonraki adımın sorusunu ekle
         tail = getQuestion(lang, nextStep);
       }
-      // LLM'in mevcut adımı tamamlama yorumu varsa, üzerine bir sonraki adımı ekle
+
       if (assistant_reply) {
         assistant_reply = `${assistant_reply} ${tail}`;
       } else {
         assistant_reply = tail;
       }
     }
+
     // SIGORTA MESAJI EKLEME (benefits adımı için)
     if (stepIndex === 5 && mentionsSigorta(userInputRaw)) {
-      const sigMsg = lang === "tr" ? " Sigorta (SGK) konusu yasal bir zorunluluktur; bunu mutlaka iş görüşmesinde işverenle netleştirmeni öneriyorum. Biz sigortasız çalışmayı teşvik etmiyoruz." : " Insurance/social security is a legal requirement; you should always clarify it directly with the employer during the interview. We do not encourage working without insurance.";
-      assistant_reply = assistant_reply ? assistant_reply + sigMsg : sigMsg;
+      const sigMsg = lang === "tr"
+        ? " Sigorta (SGK) konusu yasal bir zorunluluktur; bunu mutlaka iş görüşmesinde işverenle netleştirmeni öneriyorum. Biz sigortasız çalışmayı teşvik etmiyoruz."
+        : " Insurance/social security is a legal requirement; you should always clarify it directly with the employer during the interview. We do not encourage working without insurance.";
+      assistant_reply = assistant_reply
+        ? assistant_reply + sigMsg
+        : sigMsg;
     }
+
     const durationMs = Date.now() - requestStart;
+
     // Basit logging & analytics
     try {
       const logPayload = {
@@ -824,33 +978,41 @@ Deno.serve(async (req)=>{
         is_finished: responseIsFinished,
         has_experience: Boolean(newForm.p_experience),
         has_bio: Boolean(newForm.p_bio),
-        has_salary: Boolean(newForm.p_salary_min && newForm.p_salary_max),
+        has_salary: Boolean(
+          newForm.p_salary_min && newForm.p_salary_max,
+        ),
         assistant_reply_preview: assistant_reply.slice(0, 180),
-        duration_ms: durationMs
+        duration_ms: durationMs,
       };
       console.log(JSON.stringify(logPayload));
-    } catch  {
-    // Logging başarısız olsa bile akışı bozma
+    } catch {
+      // Logging başarısız olsa bile akışı bozma
     }
+
     // Nihai yanıtı döndür
     return ok({
       assistant_reply,
       is_finished: responseIsFinished,
       step_index: responseStepIndex,
-      form_state: newForm
+      form_state: newForm,
     });
-  } catch (err) {
-    const detail = typeof err === "object" && err !== null && "message" in err ? err.message : String(err);
-    // Dahili veya upstream hataları
-    return new Response(JSON.stringify({
-      error: "internal_error",
-      detail
-    }), {
-      status: 500,
-      headers: {
-        "Content-Type": "application/json",
-        ...corsHeaders
-      }
-    });
+  } catch (err: any) {
+    const detail = typeof err === "object" && err !== null && "message" in err
+      ? err.message
+      : String(err);
+
+    return new Response(
+      JSON.stringify({
+        error: "internal_error",
+        detail,
+      }),
+      {
+        status: 500,
+        headers: {
+          "Content-Type": "application/json",
+          ...corsHeaders,
+        },
+      },
+    );
   }
 });
